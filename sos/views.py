@@ -31,17 +31,52 @@ from .filters import SOSAlertFilter
 class TriggerSOSView(APIView):
     """
     POST /api/v1/sos/
-
-    Triggered when student holds the SOS button for 2 seconds.
-    Creates a new alert or returns existing active one.
     """
-
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        print("SOS REQUEST DATA:", request.data)  # ← ADD THIS LINE
+        print("SOS REQUEST DATA:", request.data)
+
         serializer = TriggerSOSSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        if not serializer.is_valid():
+            print("SOS VALIDATION ERRORS:", serializer.errors)
+            return Response(
+                {"error": "Invalid data", "details": serializer.errors},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            alert, created = trigger_sos(
+                user=request.user,
+                **serializer.validated_data,
+            )
+        except Exception as e:
+            print("SOS TRIGGER ERROR:", str(e))
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        response_data = SOSAlertSerializer(alert).data
+
+        if created:
+            return Response(
+                {"message": "SOS alert sent. Security has been notified.", "alert": response_data},
+                status=status.HTTP_201_CREATED,
+            )
+        else:
+            return Response(
+                {"message": "You already have an active SOS alert.", "alert": response_data},
+                status=status.HTTP_200_OK,
+            )
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        print("SOS REQUEST DATA:", request.data)
+        serializer = TriggerSOSSerializer(data=request.data)
+        if not serializer.is_valid():
+            print("SOS VALIDATION ERRORS:", serializer.errors)
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         alert, created = trigger_sos(
             user=request.user,
@@ -52,21 +87,14 @@ class TriggerSOSView(APIView):
 
         if created:
             return Response(
-                {
-                    "message": "SOS alert sent. Security has been notified.",
-                    "alert": response_data,
-                },
+                {"message": "SOS alert sent. Security has been notified.", "alert": response_data},
                 status=status.HTTP_201_CREATED,
             )
         else:
             return Response(
-                {
-                    "message": "You already have an active SOS alert.",
-                    "alert": response_data,
-                },
+                {"message": "You already have an active SOS alert.", "alert": response_data},
                 status=status.HTTP_200_OK,
             )
-
 
 class MyActiveSOSView(APIView):
     """

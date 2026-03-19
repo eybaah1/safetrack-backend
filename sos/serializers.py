@@ -3,6 +3,32 @@ from .models import SOSAlert, SOSAlertEvent
 
 
 class TriggerSOSSerializer(serializers.Serializer):
+    latitude = serializers.FloatField(
+        min_value=-90, max_value=90,
+        required=False,
+        default=6.6745,
+    )
+    longitude = serializers.FloatField(
+        min_value=-180, max_value=180,
+        required=False,
+        default=-1.5716,
+    )
+    accuracy_meters = serializers.FloatField(
+        required=False,
+        allow_null=True,
+        default=None,
+    )
+    location_text = serializers.CharField(
+        max_length=200,
+        required=False,
+        allow_blank=True,
+        default="",
+    )
+    trigger_method = serializers.ChoiceField(
+        choices=SOSAlert.TriggerMethod.choices,
+        default="button",
+        required=False,
+    )
     """
     POST /api/v1/sos/
     Sent by the student's phone when SOS button is held.
