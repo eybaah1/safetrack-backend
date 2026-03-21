@@ -2,6 +2,9 @@ from rest_framework import serializers
 from .models import SOSAlert, SOSAlertEvent
 
 
+# ────────────────────────────────────────────────────────
+# TRIGGER SOS
+# ────────────────────────────────────────────────────────
 class TriggerSOSSerializer(serializers.Serializer):
     """
     POST /api/v1/sos/
@@ -14,94 +17,27 @@ class TriggerSOSSerializer(serializers.Serializer):
         required=False,
         default=6.6745,
     )
+
     longitude = serializers.FloatField(
         min_value=-180,
         max_value=180,
         required=False,
         default=-1.5716,
     )
+
     accuracy_meters = serializers.FloatField(
         required=False,
         allow_null=True,
         default=None,
     )
-    location_text = serializers.CharField(
-        max_length=200,
-        required=False,
-        allow_blank=True,  # ← THIS FIXES THE ERROR
-        default="",
-    )
-    trigger_method = serializers.ChoiceField(
-        choices=SOSAlert.TriggerMethod.choices,
-        default="button",
-        required=False,
-    )
-    latitude = serializers.FloatField(
-        min_value=-90, max_value=90,
-        required=False,
-        default=6.6745,
-    )
-    longitude = serializers.FloatField(
-        min_value=-180, max_value=180,
-        required=False,
-        default=-1.5716,
-    )
-    accuracy_meters = serializers.FloatField(
-        required=False,
-        allow_null=True,
-        default=None,
-    )
-    location_text = serializers.CharField(
-        max_length=200,
-        required=False,
-        allow_blank=True,
-        default="",
-    )
-    trigger_method = serializers.ChoiceField(
-        choices=SOSAlert.TriggerMethod.choices,
-        default="button",
-        required=False,
-    )
-    """
-    POST /api/v1/sos/
-    Sent by the student's phone when SOS button is held.
-    """
 
-    latitude = serializers.FloatField(
-        min_value=-90, max_value=90,
-        required=False,
-        default=6.6742,
-    )
-    longitude = serializers.FloatField(
-        min_value=-180, max_value=180,
-        required=False,
-        default=-1.5718,
-    )
-    accuracy_meters = serializers.FloatField(required=False, allow_null=True, default=None)
     location_text = serializers.CharField(
         max_length=200,
         required=False,
-        allow_blank=True,
+        allow_blank=True,   # ✅ FIX — allows ""
         default="",
     )
-    trigger_method = serializers.ChoiceField(
-        choices=SOSAlert.TriggerMethod.choices,
-        default="button",
-        required=False,
-    )
-    """
-    POST /api/v1/sos/
-    Sent by the student's phone when SOS button is held.
-    """
 
-    latitude = serializers.FloatField(min_value=-90, max_value=90)
-    longitude = serializers.FloatField(min_value=-180, max_value=180)
-    accuracy_meters = serializers.FloatField(required=False, allow_null=True)
-    location_text = serializers.CharField(
-        max_length=200,
-        required=False,
-        default="",
-    )
     trigger_method = serializers.ChoiceField(
         choices=SOSAlert.TriggerMethod.choices,
         default="button",
@@ -109,10 +45,12 @@ class TriggerSOSSerializer(serializers.Serializer):
     )
 
 
+# ────────────────────────────────────────────────────────
+# FULL SOS ALERT
+# ────────────────────────────────────────────────────────
 class SOSAlertSerializer(serializers.ModelSerializer):
     """
     Full SOS alert for dashboard and detail views.
-    Matches what the frontend SOSAlertsPanel and DashboardMap expect.
     """
 
     student_name = serializers.CharField(source="user.full_name", read_only=True)
@@ -163,10 +101,12 @@ class SOSAlertSerializer(serializers.ModelSerializer):
         return obj.events.count()
 
 
+# ────────────────────────────────────────────────────────
+# COMPACT SOS (MAP)
+# ────────────────────────────────────────────────────────
 class SOSAlertCompactSerializer(serializers.ModelSerializer):
     """
-    Compact version for the map markers.
-    Matches what DashboardMap SOS markers need.
+    Compact version for map markers.
     """
 
     student_name = serializers.CharField(source="user.full_name")
@@ -196,6 +136,9 @@ class SOSAlertCompactSerializer(serializers.ModelSerializer):
         return None
 
 
+# ────────────────────────────────────────────────────────
+# SOS EVENTS
+# ────────────────────────────────────────────────────────
 class SOSAlertEventSerializer(serializers.ModelSerializer):
     """Timeline events for an SOS alert."""
 
@@ -217,10 +160,12 @@ class SOSAlertEventSerializer(serializers.ModelSerializer):
         return "System"
 
 
+# ────────────────────────────────────────────────────────
+# UPDATE STATUS
+# ────────────────────────────────────────────────────────
 class UpdateSOSStatusSerializer(serializers.Serializer):
     """
     PATCH /api/v1/sos/<id>/status/
-    Used by security/admin to change SOS status.
     """
 
     status = serializers.ChoiceField(
@@ -229,10 +174,12 @@ class UpdateSOSStatusSerializer(serializers.Serializer):
     notes = serializers.CharField(required=False, default="")
 
 
+# ────────────────────────────────────────────────────────
+# ADD NOTE
+# ────────────────────────────────────────────────────────
 class SOSNoteSerializer(serializers.Serializer):
     """
     POST /api/v1/sos/<id>/notes/
-    Add a note without changing status.
     """
 
     note = serializers.CharField(min_length=1)
