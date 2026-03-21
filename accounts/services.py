@@ -2,21 +2,16 @@ import logging
 import random
 
 from django.conf import settings
+from django.core.mail import send_mail
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
 
 # ────────────────────────────────────────────────────────
-# Phone formatting
+# Phone formatting (kept for future use)
 # ────────────────────────────────────────────────────────
 def format_phone_e164(phone: str) -> str:
-    """
-    Convert a Ghana-style phone number to E.164 format.
-    '024 123 4567'  →  '+233241234567'
-    '0241234567'    →  '+233241234567'
-    '+233241234567' →  '+233241234567'
-    """
     phone = phone.replace(" ", "").replace("-", "")
     if phone.startswith("0"):
         return "+233" + phone[1:]
@@ -31,13 +26,9 @@ def format_phone_e164(phone: str) -> str:
 # Staff ID generation
 # ────────────────────────────────────────────────────────
 def generate_staff_id() -> str:
-    """
-    Generate a unique staff ID in the format SID-XXXX.
-    Retries on collision (9 000 possible values — plenty for campus security).
-    """
-    from .models import SecurityProfile  # late import to avoid circular
+    from .models import SecurityProfile
 
-    for _ in range(50):  # safety limit
+    for _ in range(50):
         candidate = f"SID-{random.randint(1000, 9999)}"
         if not SecurityProfile.objects.filter(staff_id=candidate).exists():
             return candidate
@@ -46,44 +37,76 @@ def generate_staff_id() -> str:
 
 
 # ────────────────────────────────────────────────────────
-# Twilio SMS
+# Send Staff ID via EMAIL (replaces Twilio SMS)
 # ────────────────────────────────────────────────────────
-def send_staff_id_sms(phone: str, staff_id: str) -> str | None:
+def send_staff_id_email(user, staff_id: str) -> bool:
     """
-    Send the generated staff ID to the security user's phone via Twilio.
-    Returns the Twilio message SID, or None in dry-run mode.
+    Send the generated staff ID to the security user's email.
+    Called after admin approves the security account.
     """
-    to_number = format_phone_e164(phone)
+    subject = "KNUST SafeTrack — Your Security Staff ID"
 
-    body = (
-        f"Welcome to KNUST SafeTrack!\n\n"
-        f"Your Security Staff ID is: {staff_id}\n\n"
-        f"Use this ID to log in to the Security Dashboard.\n"
-        f"Do not share it with anyone."
+    plain_message = (
+        f"Hello {user.full_name},\n\n"
+        f"Great news! Your security account has been APPROVED.\n\n"
+        f"Your Staff ID (SID): {staff_id}\n\n"
+        f"How to log in:\n"
+        f"  1. Go to the Security Login page\n"
+        f"  2. Enter your Staff ID: {staff_id}\n"
+        f"  3. Enter your password\n\n"
+        f"Keep this ID confidential. Do not share it with anyone.\n\n"
+        f"— KNUST SafeTrack Team"
     )
 
-    # Dry-run mode (no Twilio credentials configured)
-    dry_run = getattr(settings, "TWILIO_DRY_RUN", False)
-    if dry_run:
-        logger.info(
-            "[TWILIO DRY-RUN] Would send SMS to %s:\n%s", to_number, body
-        )
-        return None
+    html_message = (
+        "<div style='font-family:Arial,sans-serif;max-width:480px;margin:0 auto;'>"
+        "<div style='background:#D4A017;padding:20px;text-align:center;"
+        "border-radius:12px 12px 0 0;'>"
+        "<h1 style='color:white;margin:0;font-size:20px;'>KNUST SafeTrack</h1>"
+        "</div>"
+        "<div style='padding:30px;background:#ffffff;border:1px solid #e2e8f0;'>"
+        f"<p style='color:#475569;'>Hello <strong>{user.full_name}</strong>,</p>"
+        "<p style='color:#475569;'>Great news! Your security account has been "
+        "<strong style='color:#228B22;'>approved</strong>.</p>"
+        "<div style='background:#f1f5f9;border-radius:12px;padding:20px;"
+        "text-align:center;margin:20px 0;'>"
+        "<p style='color:#475569;margin:0 0 8px;font-size:14px;'>Your Staff ID (SID):</p>"
+        f"<span style='font-size:32px;font-weight:bold;letter-spacing:6px;"
+        f"color:#D4A017;'>{staff_id}</span>"
+        "</div>"
+        "<div style='background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;"
+        "padding:16px;margin:16px 0;'>"
+        "<p style='color:#166534;font-size:14px;font-weight:600;margin:0 0 8px;'>"
+        "How to log in:</p>"
+        "<ol style='color:#166534;font-size:13px;margin:0;padding-left:20px;'>"
+        f"<li>Go to the Security Login page</li>"
+        f"<li>Enter your Staff ID: <strong>{staff_id}</strong></li>"
+        f"<li>Enter your password</li>"
+        "</ol>"
+        "</div>"
+        "<p style='color:#DC2626;font-size:13px;font-weight:500;'>"
+        "&#128274; Keep this ID confidential. Do not share it with anyone.</p>"
+        "</div>"
+        "<div style='padding:15px;text-align:center;background:#f8fafc;"
+        "border-radius:0 0 12px 12px;border:1px solid #e2e8f0;border-top:none;'>"
+        "<p style='color:#94a3b8;font-size:11px;margin:0;'>"
+        "KNUST SafeTrack &mdash; Campus Safety &amp; Security</p>"
+        "</div></div>"
+    )
 
     try:
-        from twilio.rest import Client
-
-        client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
-        message = client.messages.create(
-            body=body,
-            from_=settings.TWILIO_PHONE_NUMBER,
-            to=to_number,
+        send_mail(
+            subject=subject,
+            message=plain_message,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[user.email],
+            html_message=html_message,
+            fail_silently=False,
         )
-        logger.info("SMS sent to %s — SID: %s", to_number, message.sid)
-        return message.sid
-
+        logger.info("Staff ID email sent to %s — SID: %s", user.email, staff_id)
+        return True
     except Exception as exc:
-        logger.error("Failed to send SMS to %s: %s", to_number, exc)
+        logger.error("Failed to send Staff ID email to %s: %s", user.email, exc)
         raise
 
 
@@ -93,9 +116,9 @@ def send_staff_id_sms(phone: str, staff_id: str) -> str | None:
 def approve_user(user, approved_by=None):
     """
     Approve a pending user.
-    If security → generate staff_id, create SecurityProfile, send SMS.
+    If security → generate staff_id, create SecurityProfile, send EMAIL.
     """
-    from .models import SecurityProfile  # late import
+    from .models import SecurityProfile
 
     user.account_status = "approved"
     user.approved_by = approved_by
@@ -105,7 +128,7 @@ def approve_user(user, approved_by=None):
     if user.user_role == "security":
         staff_id = generate_staff_id()
         SecurityProfile.objects.create(user=user, staff_id=staff_id)
-        send_staff_id_sms(user.phone, staff_id)
+        send_staff_id_email(user, staff_id)
         logger.info("Security user %s approved — staff_id=%s", user.email, staff_id)
 
     return user
@@ -132,7 +155,6 @@ def send_reset_code_email(user):
     Invalidates any previous unused codes for the same user.
     """
     from .models import PasswordResetCode
-    from django.core.mail import send_mail
     from datetime import timedelta
 
     # Invalidate old codes
@@ -162,23 +184,29 @@ def send_reset_code_email(user):
         f"— KNUST SafeTrack Team"
     )
     html_message = (
-        f"<div style='font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto;'>"
-        f"<div style='background: #D4A017; padding: 20px; text-align: center; border-radius: 12px 12px 0 0;'>"
-        f"<h1 style='color: white; margin: 0; font-size: 20px;'>KNUST SafeTrack</h1>"
-        f"</div>"
-        f"<div style='padding: 30px; background: #ffffff; border: 1px solid #e2e8f0;'>"
-        f"<p style='color: #475569;'>Hello <strong>{user.full_name}</strong>,</p>"
-        f"<p style='color: #475569;'>Your password reset code is:</p>"
-        f"<div style='background: #f1f5f9; border-radius: 12px; padding: 20px; text-align: center; margin: 20px 0;'>"
-        f"<span style='font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #D4A017;'>{code}</span>"
-        f"</div>"
-        f"<p style='color: #94a3b8; font-size: 13px;'>This code expires in <strong>15 minutes</strong>.</p>"
-        f"<p style='color: #94a3b8; font-size: 13px;'>If you did not request this, please ignore this email.</p>"
-        f"</div>"
-        f"<div style='padding: 15px; text-align: center; background: #f8fafc; border-radius: 0 0 12px 12px; border: 1px solid #e2e8f0; border-top: none;'>"
-        f"<p style='color: #94a3b8; font-size: 11px; margin: 0;'>KNUST SafeTrack — Campus Safety & Security</p>"
-        f"</div>"
-        f"</div>"
+        "<div style='font-family:Arial,sans-serif;max-width:480px;margin:0 auto;'>"
+        "<div style='background:#D4A017;padding:20px;text-align:center;"
+        "border-radius:12px 12px 0 0;'>"
+        "<h1 style='color:white;margin:0;font-size:20px;'>KNUST SafeTrack</h1>"
+        "</div>"
+        "<div style='padding:30px;background:#ffffff;border:1px solid #e2e8f0;'>"
+        f"<p style='color:#475569;'>Hello <strong>{user.full_name}</strong>,</p>"
+        "<p style='color:#475569;'>Your password reset code is:</p>"
+        "<div style='background:#f1f5f9;border-radius:12px;padding:20px;"
+        "text-align:center;margin:20px 0;'>"
+        f"<span style='font-size:32px;font-weight:bold;letter-spacing:8px;"
+        f"color:#D4A017;'>{code}</span>"
+        "</div>"
+        "<p style='color:#94a3b8;font-size:13px;'>This code expires in "
+        "<strong>15 minutes</strong>.</p>"
+        "<p style='color:#94a3b8;font-size:13px;'>If you did not request this, "
+        "please ignore this email.</p>"
+        "</div>"
+        "<div style='padding:15px;text-align:center;background:#f8fafc;"
+        "border-radius:0 0 12px 12px;border:1px solid #e2e8f0;border-top:none;'>"
+        "<p style='color:#94a3b8;font-size:11px;margin:0;'>"
+        "KNUST SafeTrack &mdash; Campus Safety &amp; Security</p>"
+        "</div></div>"
     )
 
     try:
@@ -198,10 +226,6 @@ def send_reset_code_email(user):
 
 
 def verify_reset_code(email, code):
-    """
-    Verify a 6-digit reset code.
-    Returns the user if valid, raises ValueError if not.
-    """
     from .models import PasswordResetCode, User
 
     try:
@@ -225,19 +249,14 @@ def verify_reset_code(email, code):
 
 
 def reset_password_with_code(email, code, new_password):
-    """
-    Verify the code and set the new password.
-    """
     user, reset_code = verify_reset_code(email, code)
 
     user.set_password(new_password)
     user.save(update_fields=["password"])
 
-    # Mark code as used
     reset_code.is_used = True
     reset_code.save(update_fields=["is_used"])
 
-    # Invalidate all other codes for this user
     from .models import PasswordResetCode
     PasswordResetCode.objects.filter(
         user=user, is_used=False

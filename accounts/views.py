@@ -56,7 +56,7 @@ class SignUpView(generics.CreateAPIView):
         else:
             # Security — pending
             response_data["message"] = (
-                "Account created. You will receive your Staff ID via SMS "
+                "Account created. Your Staff ID will be sent to your email "
                 "once an admin approves your request."
             )
 
@@ -203,6 +203,34 @@ class PendingUsersView(generics.ListAPIView):
 
 
 class ApproveUserView(APIView):
+    """
+    POST /api/v1/auth/admin/users/<user_id>/approve/
+    Approves a pending user.
+    If security → generates staff_id and sends it via EMAIL.
+    """
+
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def post(self, request, user_id):
+        try:
+            user = User.objects.get(id=user_id, account_status="pending")
+        except User.DoesNotExist:
+            return Response(
+                {"error": "User not found or not in pending status."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        approved = approve_user(user, approved_by=request.user)
+
+        msg = f"{approved.full_name} has been approved."
+        if approved.is_security:
+            staff_id = approved.security_profile.staff_id
+            msg += f" Staff ID ({staff_id}) has been sent to their email."
+
+        return Response(
+            {"message": msg, "user": UserSerializer(approved).data},
+            status=status.HTTP_200_OK,
+        )
     """
     POST /api/v1/auth/admin/users/<user_id>/approve/
     Approves a pending user.
