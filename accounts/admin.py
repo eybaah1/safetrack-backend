@@ -104,24 +104,89 @@ class UserAdmin(BaseUserAdmin):
     # ── Custom admin actions ────────────────────────────
     actions = ["action_approve", "action_reject"]
 
-    @admin.action(description="✅ Approve selected users (generates Staff ID for security)")
-    def action_approve(self, request, queryset):
-        pending = queryset.filter(account_status="pending")
-        count = 0
-        for user in pending:
-            try:
-                approve_user(user, approved_by=request.user)
-                count += 1
-            except Exception as exc:
+    # In your UserAdmin class, replace the action_approve method:
+
+@admin.action(description="✅ Approve selected users (generates Staff ID for security)")
+def action_approve(self, request, queryset):
+    pending = queryset.filter(account_status="pending")
+
+    if not pending.exists():
+        self.message_user(
+            request,
+            "⚠️ No pending users in selection. Already approved?",
+            level="warning",
+        )
+        return
+
+    approved = 0
+    failed = 0
+
+    for user in pending:
+        try:
+            approve_user(user, approved_by=request.user)
+            approved += 1
+        except Exception as exc:
+            failed += 1
+            self.message_user(
+                request,
+                f"❌ Error approving {user.email}: {exc}",
+                level="error",
+            )
+
+    if approved:
+        self.message_user(request, f"✅ Approved {approved} user(s).")
+    if failed:
+        self.message_user(
+            request,
+            f"⚠️ {failed} user(s) failed — check Railway logs.",
+            level="warning",
+        )
+
+
+# ← ADD THIS: New action to resend Staff ID email
+@admin.action(description="📧 Resend Staff ID email to selected security users")
+def action_resend_staff_email(self, request, queryset):
+    """Resend the staff ID email for already-approved security users."""
+    from .services import send_staff_id_email
+    from .models import SecurityProfile
+
+    count = 0
+    for user in queryset:
+        if user.user_role and user.user_role.strip().lower() == "security":
+            profile = SecurityProfile.objects.filter(user=user).first()
+            if profile:
+                sent = send_staff_id_email(user, profile.staff_id)
+                if sent:
+                    count += 1
+                    self.message_user(
+                        request,
+                        f"📧 Email resent to {user.email} (SID: {profile.staff_id})",
+                    )
+                else:
+                    self.message_user(
+                        request,
+                        f"❌ Failed to resend to {user.email} — check logs",
+                        level="error",
+                    )
+            else:
                 self.message_user(
                     request,
-                    f"Error approving {user.email}: {exc}",
-                    level="error",
+                    f"⚠️ {user.email} has no SecurityProfile yet",
+                    level="warning",
                 )
-        self.message_user(request, f"✅ Approved {count} user(s).")
 
-    @admin.action(description="❌ Reject selected users")
-    def action_reject(self, request, queryset):
+    if count == 0:
+        self.message_user(
+            request,
+            "No emails sent. Selected users may not be security users or lack profiles.",
+            level="warning",
+        )
+
+# Don't forget to register both actions:
+actions = ["action_approve", "action_reject", "action_resend_staff_email"]
+
+@admin.action(description="❌ Reject selected users")
+def action_reject(self, request, queryset):
         pending = queryset.filter(account_status="pending")
         count = 0
         for user in pending:

@@ -1,9 +1,9 @@
 import logging
 import random
-import threading
 
 from django.conf import settings
 from django.core.mail import send_mail
+from django.db import IntegrityError
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
@@ -38,18 +38,29 @@ def generate_staff_id() -> str:
 
 
 # ────────────────────────────────────────────────────────
-# Send Staff ID via EMAIL (background thread)
+# Send Staff ID via EMAIL
 # ────────────────────────────────────────────────────────
-def send_staff_id_email(user, staff_id: str) -> None:
+def send_staff_id_email(user, staff_id: str) -> bool:
     """
     Send the generated staff ID to the user's email.
-    Runs in a background thread so it NEVER blocks or crashes
-    the admin approval flow.
+
+    NO background thread — Brevo HTTP API is fast (< 1 second).
+    Removing threading eliminates the daemon-thread-killed-on-Railway
+    problem and makes errors visible immediately.
     """
+    # ← FIX: Capture values safely in case user object has issues
+    email_address = user.email
+    full_name = user.full_name or "User"  # ← FIX: handle None
+
+    logger.info(
+        "Attempting to send Staff ID email to %s (SID: %s)",
+        email_address, staff_id,
+    )  # ← FIX: log BEFORE sending so we know we reached this point
+
     subject = "KNUST SafeTrack — Your Security Staff ID"
 
     plain_message = (
-        f"Hello {user.full_name},\n\n"
+        f"Hello {full_name},\n\n"
         f"Great news! Your security account has been APPROVED.\n\n"
         f"Your Staff ID (SID): {staff_id}\n\n"
         f"How to log in:\n"
@@ -67,7 +78,7 @@ def send_staff_id_email(user, staff_id: str) -> None:
         "<h1 style='color:white;margin:0;font-size:20px;'>KNUST SafeTrack</h1>"
         "</div>"
         "<div style='padding:30px;background:#ffffff;border:1px solid #e2e8f0;'>"
-        f"<p style='color:#475569;'>Hello <strong>{user.full_name}</strong>,</p>"
+        f"<p style='color:#475569;'>Hello <strong>{full_name}</strong>,</p>"
         "<p style='color:#475569;'>Great news! Your security account has been "
         "<strong style='color:#228B22;'>approved</strong>.</p>"
         "<div style='background:#f1f5f9;border-radius:12px;padding:20px;"
@@ -96,26 +107,29 @@ def send_staff_id_email(user, staff_id: str) -> None:
         "</div></div>"
     )
 
-    # ── Capture values needed by the thread ──
-    email_address = user.email
-    from_email = settings.DEFAULT_FROM_EMAIL
-
-    def _send():
-        try:
-            send_mail(
-                subject=subject,
-                message=plain_message,
-                from_email=from_email,
-                recipient_list=[email_address],
-                html_message=html_message,
-                fail_silently=False,
-            )
-            logger.info("Staff ID email sent to %s — SID: %s", email_address, staff_id)
-        except Exception as exc:
-            logger.error("Failed to send Staff ID email to %s: %s", email_address, exc)
-
-    thread = threading.Thread(target=_send, daemon=True)
-    thread.start()
+    # ← FIX: NO threading — Brevo HTTP API is fast, threading caused silent failures
+    try:
+        send_mail(
+            subject=subject,
+            message=plain_message,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[email_address],
+            html_message=html_message,
+            fail_silently=False,
+        )
+        logger.info(
+            "✅ Staff ID email SENT to %s — SID: %s",
+            email_address, staff_id,
+        )
+        return True
+    except Exception as exc:
+        # ← FIX: Log the FULL exception so you can see it in Railway logs
+        logger.error(
+            "❌ Failed to send Staff ID email to %s: %s",
+            email_address, exc,
+            exc_info=True,  # ← FIX: includes full traceback in logs
+        )
+        return False
 
 
 # ────────────────────────────────────────────────────────
@@ -125,23 +139,70 @@ def approve_user(user, approved_by=None):
     """
     Approve a pending user.
     If security → generate staff_id, create SecurityProfile, send EMAIL.
-    Email is sent in a background thread — approval NEVER fails due to email.
     """
     from .models import SecurityProfile
+
+    # ← FIX: Log what we're working with
+    logger.info(
+        "approve_user called: email=%s, role='%s', status='%s'",
+        user.email, user.user_role, user.account_status,
+    )
 
     user.account_status = "approved"
     user.approved_by = approved_by
     user.approved_at = timezone.now()
     user.save(update_fields=["account_status", "approved_by", "approved_at", "updated_at"])
 
-    if user.user_role == "security":
-        staff_id = generate_staff_id()
-        SecurityProfile.objects.create(user=user, staff_id=staff_id)
+    # ← FIX: Case-insensitive comparison
+    if user.user_role and user.user_role.strip().lower() == "security":
 
-        # This runs in background — won't crash if email fails
-        send_staff_id_email(user, staff_id)
+        # ← FIX: Handle the case where SecurityProfile already exists
+        #   (from a previous failed approval attempt)
+        profile = SecurityProfile.objects.filter(user=user).first()
 
-        logger.info("Security user %s approved — staff_id=%s", user.email, staff_id)
+        if profile:
+            # Profile exists from a previous attempt — reuse the staff_id
+            staff_id = profile.staff_id
+            logger.warning(
+                "SecurityProfile already exists for %s — "
+                "reusing staff_id=%s, resending email",
+                user.email, staff_id,
+            )
+        else:
+            # Create new profile
+            staff_id = generate_staff_id()
+            try:
+                SecurityProfile.objects.create(user=user, staff_id=staff_id)
+                logger.info(
+                    "SecurityProfile created for %s — staff_id=%s",
+                    user.email, staff_id,
+                )
+            except IntegrityError as exc:
+                logger.error(
+                    "IntegrityError creating SecurityProfile for %s: %s",
+                    user.email, exc,
+                )
+                raise
+
+        # ← FIX: Send email synchronously so errors are visible
+        email_sent = send_staff_id_email(user, staff_id)
+
+        if email_sent:
+            logger.info(
+                "✅ Security user %s fully approved — staff_id=%s, email sent",
+                user.email, staff_id,
+            )
+        else:
+            logger.error(
+                "⚠️ Security user %s approved but email FAILED — staff_id=%s",
+                user.email, staff_id,
+            )
+    else:
+        # ← FIX: Log when the security branch is NOT entered
+        logger.info(
+            "User %s approved (role='%s' — not security, no staff ID needed)",
+            user.email, user.user_role,
+        )
 
     return user
 
@@ -163,7 +224,6 @@ def generate_reset_code():
 def send_reset_code_email(user):
     """
     Generate a 6-digit reset code, save it, and email it.
-    Runs in a background thread.
     """
     from .models import PasswordResetCode
     from datetime import timedelta
@@ -181,10 +241,12 @@ def send_reset_code_email(user):
         expires_at=expires_at,
     )
 
+    full_name = user.full_name or "User"
+
     subject = "KNUST SafeTrack — Password Reset Code"
 
     message = (
-        f"Hello {user.full_name},\n\n"
+        f"Hello {full_name},\n\n"
         f"Your password reset code is:\n\n"
         f"    {code}\n\n"
         f"This code expires in 15 minutes.\n"
@@ -199,7 +261,7 @@ def send_reset_code_email(user):
         "<h1 style='color:white;margin:0;font-size:20px;'>KNUST SafeTrack</h1>"
         "</div>"
         "<div style='padding:30px;background:#ffffff;border:1px solid #e2e8f0;'>"
-        f"<p style='color:#475569;'>Hello <strong>{user.full_name}</strong>,</p>"
+        f"<p style='color:#475569;'>Hello <strong>{full_name}</strong>,</p>"
         "<p style='color:#475569;'>Your password reset code is:</p>"
         "<div style='background:#f1f5f9;border-radius:12px;padding:20px;"
         "text-align:center;margin:20px 0;'>"
@@ -218,27 +280,23 @@ def send_reset_code_email(user):
         "</div></div>"
     )
 
-    email_address = user.email
-    from_email = settings.DEFAULT_FROM_EMAIL
-
-    def _send():
-        try:
-            send_mail(
-                subject=subject,
-                message=message,
-                from_email=from_email,
-                recipient_list=[email_address],
-                html_message=html_message,
-                fail_silently=False,
-            )
-            logger.info("Reset code sent to %s", email_address)
-        except Exception as exc:
-            logger.error("Failed to send reset code to %s: %s", email_address, exc)
-
-    thread = threading.Thread(target=_send, daemon=True)
-    thread.start()
-
-    return True
+    try:
+        send_mail(
+            subject=subject,
+            message=message,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[user.email],
+            html_message=html_message,
+            fail_silently=False,
+        )
+        logger.info("Reset code sent to %s", user.email)
+        return True
+    except Exception as exc:
+        logger.error(
+            "Failed to send reset code to %s: %s",
+            user.email, exc, exc_info=True,
+        )
+        raise
 
 
 def verify_reset_code(email, code):
