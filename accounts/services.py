@@ -1,5 +1,6 @@
 import logging
 import random
+import threading
 
 from django.conf import settings
 from django.core.mail import send_mail
@@ -9,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 # ────────────────────────────────────────────────────────
-# Phone formatting (kept for future use)
+# Phone formatting
 # ────────────────────────────────────────────────────────
 def format_phone_e164(phone: str) -> str:
     phone = phone.replace(" ", "").replace("-", "")
@@ -37,12 +38,13 @@ def generate_staff_id() -> str:
 
 
 # ────────────────────────────────────────────────────────
-# Send Staff ID via EMAIL (replaces Twilio SMS)
+# Send Staff ID via EMAIL (background thread)
 # ────────────────────────────────────────────────────────
-def send_staff_id_email(user, staff_id: str) -> bool:
+def send_staff_id_email(user, staff_id: str) -> None:
     """
-    Send the generated staff ID to the security user's email.
-    Called after admin approves the security account.
+    Send the generated staff ID to the user's email.
+    Runs in a background thread so it NEVER blocks or crashes
+    the admin approval flow.
     """
     subject = "KNUST SafeTrack — Your Security Staff ID"
 
@@ -94,20 +96,26 @@ def send_staff_id_email(user, staff_id: str) -> bool:
         "</div></div>"
     )
 
-    try:
-        send_mail(
-            subject=subject,
-            message=plain_message,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[user.email],
-            html_message=html_message,
-            fail_silently=False,
-        )
-        logger.info("Staff ID email sent to %s — SID: %s", user.email, staff_id)
-        return True
-    except Exception as exc:
-        logger.error("Failed to send Staff ID email to %s: %s", user.email, exc)
-        raise
+    # ── Capture values needed by the thread ──
+    email_address = user.email
+    from_email = settings.DEFAULT_FROM_EMAIL
+
+    def _send():
+        try:
+            send_mail(
+                subject=subject,
+                message=plain_message,
+                from_email=from_email,
+                recipient_list=[email_address],
+                html_message=html_message,
+                fail_silently=False,
+            )
+            logger.info("Staff ID email sent to %s — SID: %s", email_address, staff_id)
+        except Exception as exc:
+            logger.error("Failed to send Staff ID email to %s: %s", email_address, exc)
+
+    thread = threading.Thread(target=_send, daemon=True)
+    thread.start()
 
 
 # ────────────────────────────────────────────────────────
@@ -117,6 +125,7 @@ def approve_user(user, approved_by=None):
     """
     Approve a pending user.
     If security → generate staff_id, create SecurityProfile, send EMAIL.
+    Email is sent in a background thread — approval NEVER fails due to email.
     """
     from .models import SecurityProfile
 
@@ -128,7 +137,10 @@ def approve_user(user, approved_by=None):
     if user.user_role == "security":
         staff_id = generate_staff_id()
         SecurityProfile.objects.create(user=user, staff_id=staff_id)
+
+        # This runs in background — won't crash if email fails
         send_staff_id_email(user, staff_id)
+
         logger.info("Security user %s approved — staff_id=%s", user.email, staff_id)
 
     return user
@@ -145,24 +157,20 @@ def reject_user(user):
 # Password Reset with 6-digit code
 # ────────────────────────────────────────────────────────
 def generate_reset_code():
-    """Generate a random 6-digit code."""
     return str(random.randint(100000, 999999))
 
 
 def send_reset_code_email(user):
     """
-    Generate a 6-digit reset code, save it, and email it to the user.
-    Invalidates any previous unused codes for the same user.
+    Generate a 6-digit reset code, save it, and email it.
+    Runs in a background thread.
     """
     from .models import PasswordResetCode
     from datetime import timedelta
 
     # Invalidate old codes
-    PasswordResetCode.objects.filter(
-        user=user, is_used=False
-    ).update(is_used=True)
+    PasswordResetCode.objects.filter(user=user, is_used=False).update(is_used=True)
 
-    # Generate new code
     code = generate_reset_code()
     expires_at = timezone.now() + timedelta(minutes=15)
 
@@ -173,8 +181,8 @@ def send_reset_code_email(user):
         expires_at=expires_at,
     )
 
-    # Send email
     subject = "KNUST SafeTrack — Password Reset Code"
+
     message = (
         f"Hello {user.full_name},\n\n"
         f"Your password reset code is:\n\n"
@@ -183,6 +191,7 @@ def send_reset_code_email(user):
         f"If you did not request this, please ignore this email.\n\n"
         f"— KNUST SafeTrack Team"
     )
+
     html_message = (
         "<div style='font-family:Arial,sans-serif;max-width:480px;margin:0 auto;'>"
         "<div style='background:#D4A017;padding:20px;text-align:center;"
@@ -209,20 +218,27 @@ def send_reset_code_email(user):
         "</div></div>"
     )
 
-    try:
-        send_mail(
-            subject=subject,
-            message=message,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[user.email],
-            html_message=html_message,
-            fail_silently=False,
-        )
-        logger.info("Reset code sent to %s", user.email)
-        return True
-    except Exception as exc:
-        logger.error("Failed to send reset code to %s: %s", user.email, exc)
-        raise
+    email_address = user.email
+    from_email = settings.DEFAULT_FROM_EMAIL
+
+    def _send():
+        try:
+            send_mail(
+                subject=subject,
+                message=message,
+                from_email=from_email,
+                recipient_list=[email_address],
+                html_message=html_message,
+                fail_silently=False,
+            )
+            logger.info("Reset code sent to %s", email_address)
+        except Exception as exc:
+            logger.error("Failed to send reset code to %s: %s", email_address, exc)
+
+    thread = threading.Thread(target=_send, daemon=True)
+    thread.start()
+
+    return True
 
 
 def verify_reset_code(email, code):
@@ -234,9 +250,7 @@ def verify_reset_code(email, code):
         raise ValueError("No account found with this email.")
 
     reset_code = PasswordResetCode.objects.filter(
-        user=user,
-        code=code,
-        is_used=False,
+        user=user, code=code, is_used=False,
     ).order_by("-created_at").first()
 
     if not reset_code:
@@ -258,9 +272,7 @@ def reset_password_with_code(email, code, new_password):
     reset_code.save(update_fields=["is_used"])
 
     from .models import PasswordResetCode
-    PasswordResetCode.objects.filter(
-        user=user, is_used=False
-    ).update(is_used=True)
+    PasswordResetCode.objects.filter(user=user, is_used=False).update(is_used=True)
 
     logger.info("Password reset successful for %s", user.email)
     return user

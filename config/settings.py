@@ -37,6 +37,8 @@ INSTALLED_APPS = [
     "django_filters",
     "drf_spectacular",
     "channels",
+    "anymail",          # ← ADD THIS
+
 
     # Local
     "common",
@@ -50,6 +52,7 @@ INSTALLED_APPS = [
     "chat",
     "notifications",
     "reports",
+    
 ]
 
 
@@ -227,19 +230,21 @@ CHANNEL_LAYERS = {
 # ── Email ──────────────────────────────────────────────
 # ── Email ──────────────────────────────────────────────
 # Defaults to SMTP so Brevo works in Railway without needing EMAIL_BACKEND env var
-EMAIL_BACKEND = config(
-    "EMAIL_BACKEND",
-    default="django.core.mail.backends.smtp.EmailBackend",
-)
-EMAIL_HOST = config("EMAIL_HOST", default="smtp-relay.brevo.com")
-EMAIL_PORT = config("EMAIL_PORT", default=587, cast=int)
-EMAIL_USE_TLS = config("EMAIL_USE_TLS", default=True, cast=bool)
-EMAIL_HOST_USER = config("EMAIL_HOST_USER", default="")
-EMAIL_HOST_PASSWORD = config("EMAIL_HOST_PASSWORD", default="")
+# ── Email (Brevo HTTP API — works on Railway) ─────────
+EMAIL_BACKEND = "anymail.backends.brevo.EmailBackend"
+
+ANYMAIL = {
+    "BREVO_API_KEY": config("BREVO_API_KEY", default=""),
+}
+
+# The sender MUST be verified in your Brevo dashboard
 DEFAULT_FROM_EMAIL = config(
     "DEFAULT_FROM_EMAIL",
     default="KNUST SafeTrack <baahernest262@gmail.com>",
 )
+
+# Safety net — prevents infinite hangs if you ever fall back to SMTP
+EMAIL_TIMEOUT = 10
 
 
 # ── Production Security Headers ────────────────────────
